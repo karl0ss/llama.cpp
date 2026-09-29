@@ -156,6 +156,48 @@ static __global__ void k_get_rows_back_float(
     }
 }
 
+// One thread per q4_0 block: the 32 halves are contiguous in the output row, so four 16-byte
+// stores per thread coalesce across the warp.
+static __global__ void k_get_rows_q4_0_f16_blk(
+        const void * __restrict__ src0, const int32_t * __restrict__ src1, half * __restrict__ dst,
+        const int64_t nbr, const int64_t ne10, const int64_t ne11, const int64_t ne12,
+        const size_t s1, const size_t s2, const size_t s3,
+        const size_t nb01, const size_t nb02, const size_t nb03,
+        const size_t s10, const size_t s11, const size_t s12) {
+    const int64_t i = (int64_t) blockIdx.x*blockDim.x + threadIdx.x;
+    if (i >= nbr*ne10*ne11*ne12) {
+        return;
+    }
+    int64_t t = i / nbr;
+    const int64_t ib  = i - t*nbr;
+    const int64_t i10 = t % ne10;
+    t /= ne10;
+    const int64_t i11 = t % ne11;
+    const int64_t i12 = t / ne11;
+
+    const int i01 = src1[i10*s10 + i11*s11 + i12*s12];
+    const block_q4_0 * x = (const block_q4_0 *)((const char *) src0 + i01*nb01 + i11*nb02 + i12*nb03) + ib;
+    const float d = x->d;
+
+    uint32_t w[QK4_0/2];
+#pragma unroll
+    for (int p = 0; p < QK4_0/4; ++p) {
+        const int a = x->qs[2*p + 0];
+        const int b = x->qs[2*p + 1];
+        const half lo0 = ggml_cuda_cast<half>(((float) (a & 0xF) - 8.0f) * d);
+        const half lo1 = ggml_cuda_cast<half>(((float) (b & 0xF) - 8.0f) * d);
+        const half hi0 = ggml_cuda_cast<half>(((float) (a >> 4)  - 8.0f) * d);
+        const half hi1 = ggml_cuda_cast<half>(((float) (b >> 4)  - 8.0f) * d);
+        w[p]           = (uint32_t) __half_as_ushort(lo0) | ((uint32_t) __half_as_ushort(lo1) << 16);
+        w[p + QK4_0/4] = (uint32_t) __half_as_ushort(hi0) | ((uint32_t) __half_as_ushort(hi1) << 16);
+    }
+    uint4 * y = (uint4 *) (dst + i10*s1 + i11*s2 + i12*s3 + ib*QK4_0);
+    y[0] = make_uint4(w[ 0], w[ 1], w[ 2], w[ 3]);
+    y[1] = make_uint4(w[ 4], w[ 5], w[ 6], w[ 7]);
+    y[2] = make_uint4(w[ 8], w[ 9], w[10], w[11]);
+    y[3] = make_uint4(w[12], w[13], w[14], w[15]);
+}
+
 template<int qk, int qr, dequantize_kernel_t dq, typename dst_t>
 static void get_rows_cuda_q(
         const void * src0_d, const int32_t * src1_d, dst_t * dst_d,
@@ -233,13 +275,16 @@ static void get_rows_cuda_kq(
 // The general kernel gives each gathered row its own block, which is a poor fit when the rows
 // are only a few elements wide: a scalar gather over a large index array then launches one
 // mostly-idle block per gathered row. Flatten (row, element) into a single thread index instead.
-// Kept to ne00 <= 2 so it can never take work away from the vectorised same-type path, whose
-// smallest useful width is 4 (f32) / 8 (f16).
+// The unconditional path is kept to ne00 <= 2 so it can never take work away from the vectorised
+// same-type path, whose smallest useful width is 4 (f32) / 8 (f16). GGML_CUDA_GETROWS_FLAT_MAX
+// raises that bound for batched gathers, where the general kernel leaves most of a block idle.
 template<typename src0_t, typename dst_t>
 static __global__ void k_get_rows_float_narrow(
         const src0_t * src0_ptr, const int32_t * src1_ptr, dst_t * dst_ptr,
-        const int64_t ne00, const int64_t ne10,
-        const size_t s1, const size_t nb01, const size_t s10) {
+        const int64_t ne00, const int64_t ne10, const int64_t ne11, const int64_t ne12,
+        const size_t s1, const size_t s2, const size_t s3,
+        const size_t nb01, const size_t nb02, const size_t nb03,
+        const size_t s10, const size_t s11, const size_t s12) {
 
     ggml_cuda_pdl_lc();
     const src0_t  * GGML_CUDA_RESTRICT src0 = src0_ptr;
@@ -248,18 +293,22 @@ static __global__ void k_get_rows_float_narrow(
     ggml_cuda_pdl_sync();
 
     const int64_t i = (int64_t) blockIdx.x*blockDim.x + threadIdx.x;
-    if (i >= ne00*ne10) {
+    if (i >= ne00*ne10*ne11*ne12) {
         return;
     }
 
-    const int64_t i10 = i / ne00;
-    const int64_t i00 = i - i10*ne00;
+    int64_t t = i / ne00;
+    const int64_t i00 = i - t*ne00;
+    const int64_t i10 = t % ne10;
+    t /= ne10;
+    const int64_t i11 = t % ne11;
+    const int64_t i12 = t / ne11;
 
-    const int i01 = src1[i10*s10];
+    const int i01 = src1[i10*s10 + i11*s11 + i12*s12];
 
-    const src0_t * GGML_CUDA_RESTRICT src0_row = (const src0_t *)((const char *) src0 + i01*nb01);
+    const src0_t * GGML_CUDA_RESTRICT src0_row = (const src0_t *)((const char *) src0 + i01*nb01 + i11*nb02 + i12*nb03);
 
-    dst[i10*s1 + i00] = ggml_cuda_cast<dst_t>(src0_row[i00]);
+    dst[i10*s1 + i11*s2 + i12*s3 + i00] = ggml_cuda_cast<dst_t>(src0_row[i00]);
 }
 
 template<typename src0_t, typename dst_t>
@@ -286,16 +335,20 @@ static void get_rows_cuda_float(
     GGML_ASSERT(ne11 <= std::numeric_limits<uint32_t>::max() / ne12);
     const uint3 ne12_fdv = init_fastdiv_values(ne12);
 
-    if (ne00 <= 2 && ne11 == 1 && ne12 == 1) {
-        const int64_t n_flat    = ne00*ne10;
+    // one thread per element; a block per row leaves most threads idle when rows are this short
+    static const int64_t flat_max = getenv("GGML_CUDA_GETROWS_FLAT_MAX") ? atoll(getenv("GGML_CUDA_GETROWS_FLAT_MAX")) : -1;
+    if ((ne00 <= 2 && ne11 == 1 && ne12 == 1) || ne00 <= flat_max) {
+        const int64_t n_flat    = ne00*ne10*ne11*ne12;
         const int64_t block_num = (n_flat + CUDA_GET_ROWS_BLOCK_SIZE - 1) / CUDA_GET_ROWS_BLOCK_SIZE;
 
         const ggml_cuda_kernel_launch_params launch_params =
             ggml_cuda_kernel_launch_params{dim3(block_num, 1, 1), block_dims, 0, stream};
         ggml_cuda_kernel_launch(k_get_rows_float_narrow<src0_t, dst_t>, launch_params,
             src0_d, src1_d, dst_d,
-            ne00, ne10,
-            s1, nb01, s10);
+            ne00, ne10, ne11, ne12,
+            s1, s2, s3,
+            nb01, nb02, nb03,
+            s10, s11, s12);
         return;
     }
 
@@ -370,6 +423,23 @@ static void ggml_cuda_get_rows_switch_src0_type(
                 ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
             break;
         case GGML_TYPE_Q4_0:
+            if constexpr (std::is_same_v<dst_t, half>) {
+                static const bool blk = getenv("GGML_CUDA_GETROWS_Q4_0_BLK") && atoi(getenv("GGML_CUDA_GETROWS_Q4_0_BLK"));
+                if (blk && ne00 % QK4_0 == 0 && ((uintptr_t) dst_d) % 16 == 0 &&
+                        nb1 % 16 == 0 && nb2 % 16 == 0 && nb3 % 16 == 0) {
+                    const int64_t nbr   = ne00/QK4_0;
+                    const int64_t n     = nbr*ne10*ne11*ne12;
+                    const int     bsize = 256;
+                    const ggml_cuda_kernel_launch_params blk_params =
+                        ggml_cuda_kernel_launch_params(dim3((n + bsize - 1)/bsize), dim3(bsize), 0, stream);
+                    ggml_cuda_kernel_launch(k_get_rows_q4_0_f16_blk, blk_params, src0_d, src1_d, dst_d,
+                        nbr, ne10, ne11, ne12,
+                        nb1/sizeof(half), nb2/sizeof(half), nb3/sizeof(half),
+                        nb01, nb02, nb03,
+                        nb10/sizeof(int32_t), nb11/sizeof(int32_t), nb12/sizeof(int32_t));
+                    break;
+                }
+            }
             get_rows_cuda_q<QK4_0, QR4_0, dequantize_q4_0>(src0_d, src1_d, dst_d,
                 ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
             break;

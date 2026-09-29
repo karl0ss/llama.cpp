@@ -979,6 +979,12 @@ struct ggml_backend_sched {
 
     int debug;
 
+    // run the GPU work that the next CPU split does not need while the CPU computes [LLAMA_SCHED_PREFETCH]
+    int prefetch;
+    ggml_backend_event_t prefetch_event[GGML_SCHED_MAX_BACKENDS];
+    struct ggml_tensor * prefetched[GGML_SCHED_MAX_SPLIT_INPUTS];
+    int n_prefetched;
+    int prefetch_backend_id;
     // graph size of the current and the previous scheduling, used by the realloc callback and for debugging
     // graph reallocations [GGML_SCHED_DEBUG_REALLOC]
     // ref: https://github.com/ggml-org/llama.cpp/pull/17617
@@ -1862,11 +1868,26 @@ static void ggml_backend_sched_copy_input(ggml_backend_sched_t sched, struct ggm
     }
 }
 
+static bool sched_backend_is_cpu(ggml_backend_t backend) {
+    return ggml_backend_dev_type(ggml_backend_get_device(backend)) == GGML_BACKEND_DEVICE_TYPE_CPU;
+}
+
+// input already copied by the previous split's prefetch [LLAMA_SCHED_PREFETCH]
+static bool sched_input_prefetched(ggml_backend_sched_t sched, const struct ggml_tensor * input) {
+    for (int i = 0; i < sched->n_prefetched; i++) {
+        if (sched->prefetched[i] == input) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
     GGML_ASSERT(sched);
     struct ggml_backend_sched_split * splits = sched->splits;
 
     int prev_backend_id = -1;
+    sched->n_prefetched = 0;
 
     for (int split_id = 0; split_id < sched->n_splits; split_id++) {
         struct ggml_backend_sched_split * split = &splits[split_id];
@@ -1883,23 +1904,83 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
         }
 
+        // waits only for the copies, not for the GPU work queued after them
+        if (sched->n_prefetched > 0) {
+            ggml_backend_event_synchronize(sched->prefetch_event[sched->prefetch_backend_id]);
+        }
+
         // copy the input tensors to the split backend
         // the weights in host memory are copied last, so that the copy callback can read the other inputs of the split
         for (int input_id = 0; input_id < split->n_inputs; input_id++) {
+            // already copied by the previous split's prefetch [LLAMA_SCHED_PREFETCH]
+            if (sched_input_prefetched(sched, split->inputs[input_id])) {
+                continue;
+            }
             if (!ggml_backend_sched_is_host_weight(split->inputs[input_id])) {
                 ggml_backend_sched_copy_input(sched, split, split->inputs[input_id]);
             }
         }
         for (int input_id = 0; input_id < split->n_inputs; input_id++) {
+            // already copied by the previous split's prefetch [LLAMA_SCHED_PREFETCH]
+            if (sched_input_prefetched(sched, split->inputs[input_id])) {
+                continue;
+            }
             if (ggml_backend_sched_is_host_weight(split->inputs[input_id])) {
                 ggml_backend_sched_copy_input(sched, split, split->inputs[input_id]);
             }
         }
 
+        sched->n_prefetched = 0;
+        bool split_done = false;
+        if (sched->prefetch && split_id + 1 < sched->n_splits && !sched_backend_is_cpu(split_backend) && !sched->callback_eval) {
+            struct ggml_backend_sched_split * next = &splits[split_id + 1];
+            if (sched_backend_is_cpu(sched->backends[next->backend_id])) {
+                // the last node this split produces for the next one: everything after it can run while the CPU works
+                int cut = -1;
+                for (int j = 0; j < split->graph.n_nodes; j++) {
+                    for (int i = 0; i < next->n_inputs; i++) {
+                        if (split->graph.nodes[j] == next->inputs[i] && j > cut) { cut = j; }
+                    }
+                }
+                if (cut >= 0 && cut + 1 < split->graph.n_nodes) {
+                    struct ggml_cgraph head = ggml_graph_view(&split->graph, 0, cut + 1);
+                    // keep the split's identity so backends can still recognise an unchanged graph
+                    enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &head);
+                    if (ec != GGML_STATUS_SUCCESS) {
+                        return ec;
+                    }
+                    for (int i = 0; i < next->n_inputs && sched->n_prefetched < GGML_SCHED_MAX_SPLIT_INPUTS; i++) {
+                        struct ggml_tensor * in = next->inputs[i];
+                        struct ggml_tensor * in_cpy = tensor_copy(in, next->backend_id, sched->cur_copy);
+                        if ((in->flags & GGML_TENSOR_FLAG_INPUT) || !ggml_is_contiguous(in) || !in_cpy || !in_cpy->data || !in->data ||
+                            !in_cpy->buffer || !ggml_backend_buffer_is_host(in_cpy->buffer) ||
+                            ggml_backend_sched_get_tensor_backend(sched, in) != split_backend ||
+                            ggml_nbytes(in_cpy) != ggml_nbytes(in)) {
+                            continue;
+                        }
+                        ggml_backend_tensor_get_async(split_backend, in, in_cpy->data, 0, ggml_nbytes(in));
+                        sched->prefetched[sched->n_prefetched++] = in;
+                    }
+                    if (sched->n_prefetched > 0) {
+                        ggml_backend_event_record(sched->prefetch_event[split_backend_id], split_backend);
+                        sched->prefetch_backend_id = split_backend_id;
+                    }
+                    struct ggml_cgraph tail = ggml_graph_view(&split->graph, cut + 1, split->graph.n_nodes);
+                    ec = ggml_backend_graph_compute_async(split_backend, &tail);
+                    if (ec != GGML_STATUS_SUCCESS) {
+                        return ec;
+                    }
+                    split_done = true;
+                }
+            }
+        }
+
         if (!sched->callback_eval) {
-            enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
-            if (ec != GGML_STATUS_SUCCESS) {
-                return ec;
+            if (!split_done) {
+                enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
+                if (ec != GGML_STATUS_SUCCESS) {
+                    return ec;
+                }
             }
         } else {
             // similar to ggml_backend_compare_graph_backend
@@ -2016,6 +2097,14 @@ ggml_backend_sched_t ggml_backend_sched_new(
         }
     }
 
+    {
+        const char * e = getenv("LLAMA_SCHED_PREFETCH");
+        sched->prefetch = e ? atoi(e) : 0;
+        for (int b = 0; b < n_backends; b++) {
+            sched->prefetch_event[b] = sched->prefetch && !sched_backend_is_cpu(backends[b]) ? ggml_backend_event_new(backends[b]->device) : NULL;
+        }
+    }
+
     sched->galloc = ggml_gallocr_new_n(sched->bufts, n_backends);
     sched->op_offload = op_offload;
 
@@ -2032,6 +2121,7 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
         for (int c = 0; c < sched->n_copies; c++) {
             ggml_backend_event_free(sched->events[b][c]);
         }
+        ggml_backend_event_free(sched->prefetch_event[b]);
     }
     ggml_gallocr_free(sched->galloc);
     ggml_free(sched->ctx);

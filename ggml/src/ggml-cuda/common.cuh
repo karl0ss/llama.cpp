@@ -1497,7 +1497,7 @@ struct ggml_backend_cuda_context {
     cudaStream_t streams[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = { { nullptr } };
     cublasHandle_t cublas_handles[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = {nullptr};
     void * cublas_workspaces[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = {nullptr};
-    size_t cublas_workspace_sizes[GGML_CUDA_MAX_DEVICES] = {0}; (Add P100 patch port: patches 01-22 + hand-ported fattn-f16-kv-chunk (31))
+    size_t cublas_workspace_sizes[GGML_CUDA_MAX_DEVICES] = {0};
 
     int curr_stream_no = 0;
 

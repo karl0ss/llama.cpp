@@ -74,12 +74,33 @@ cmake --build build -j
 
 ## Measurements
 
-On a Tesla P100 16GB (Driver 580.x / CUDA 13.0, one GPU + AVX2 CPU), the
-round-1 subset (patches 01-22+31) measured +25-35% prefill and decode vs the
-same llama.cpp base without the port, on interleaved A/B benches with
-GLM-4.7-Flash (MoE, MLA, ncmoe offload) and gpt-oss-20b as the workload
-models, and round 2 (32-40) was kept behavior-neutral-or-gain on the same
-method.
+On a Tesla P100 16GB (Driver 580.x / CUDA 13.0, one GPU + AVX2 CPU), interleaved
+A/B benches (same prompt, alternating binaries, medians) with two workload
+models: GLM-4.7-Flash (MoE, MLA, ncmoe offload) and gpt-oss-20b (Q4_K_M).
+
+The set was originally written against an older llama.cpp base, where it
+measured +25-35% prefill and decode. On this newer base (`eb182d85c`,
+~1200 commits ahead of the original), the honest attribution against a
+*vanilla build of the same new base* is:
+
+| workload | metric | vanilla new base | + port (this branch) |
+|---|---|---|---|
+| gpt-oss-20b | decode t/s | 62.6 | 79.6 (**+27%**) |
+| gpt-oss-20b | prefill t/s | 450 | 425 (wash / noise) |
+| GLM-4.7-Flash | decode t/s | 34.3 | 37.1 median (t3 36.3-38.1, 3/3 rounds) |
+
+Two footnotes from the same measurements, both *upstream* behavior, not this
+port's:
+
+- Between the old base and `eb182d85c`, upstream lost ~35% gpt-oss prefill on
+  Pascal (687 → 450 t/s on our box). If you are on Pascal and prefill-bound,
+  an older-base build may still beat a current one; it is not the patch set's
+  doing either way.
+- GLM decode was ~32.6 t/s on the old base + patches, ~34.3 vanilla on the new
+  base, ~37.1 on the new base + patches — so most of the GLM decode gain on
+  the new base comes from upstream drift, with the port adding a further ~8%
+  on top (and it still wins every interleaved round against the old base +
+  patches, which measures ~32.6).
 
 Benching discipline note (this matters): single-run numbers on this class of
 box are noisy to the point of uselessness. Use interleaved A/B

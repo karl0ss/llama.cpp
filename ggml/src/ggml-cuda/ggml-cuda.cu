@@ -4047,6 +4047,9 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 #endif
             ggml_cuda_op_ssm_scan_fused_cache(*cuda_ctx, node, fused_state_cpy);
             return nodes_to_skip;
+        }
+    }
+
     // Merge runs of identically shaped CPY / L2_NORM nodes into one launch each
     if (node->op == GGML_OP_CPY) {
         static bool disable_cpy = getenv("GGML_CUDA_DISABLE_FUSE_CPY") != nullptr &&

@@ -180,7 +180,9 @@ static __global__ void rms_norm_f32(const float * x,
                     const int i = tid + k*block_size;
                     if (i < ncols4) {
                         if constexpr (do_pre_add) {
-                            xs[k]       = pre_a4[i] + pre_b4[i];
+                            const float4 a = pre_a4[i];
+                            const float4 b = pre_b4[i];
+                            xs[k]       = make_float4(a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w);
                             pre_dst4[i] = xs[k]; // always written: the next layer reads it as its residual
                         } else {
                             xs[k] = x4[i];
@@ -894,7 +896,7 @@ void ggml_cuda_op_rms_norm_fused_pre_add(ggml_backend_cuda_context & ctx,
     const dim3 blocks_num(ne01, MIN(ne02, UINT16_MAX), MIN(ne03, UINT16_MAX));
 
     rms_norm_f32_dispatch</*do_multiply*/true, /*do_add*/false, /*do_scale*/false, /*do_pre_add*/true>(
-        blocks_num, rms_norm_src, dst_d, (int) ne00, (int) ne01, (int) ne02, (int) ne03, s01, s02, s03, eps,
+        blocks_num, rms_norm_src, dst_d, (int) ne00, (int) ne02, (int) ne03, s01, s02, s03, eps,
         mul_src, mul_s01, mul_s02, mul_s03,
         mul_ncols_packed, mul_nrows_packed, mul_nchannels_packed, mul_nsamples_packed,
         nullptr, 0, 0, 0, zero_packed, zero_packed, zero_packed, zero_packed,
@@ -960,65 +962,6 @@ void ggml_cuda_op_rms_norm_fused(ggml_backend_cuda_context & ctx, ggml_tensor * 
                           eps, stream);
 }
 
-// Fuse ADD -> RMS_NORM -> MUL into one launch.  The ADD's output (the next layer's residual) is
-// still written, so no node is eliminated; the only requirement is that rms_norm's input is
-// exactly the preceding ADD.
-void ggml_cuda_op_rms_norm_fused_pre_add(ggml_backend_cuda_context & ctx,
-                                         ggml_tensor *               add_tensor,
-                                         ggml_tensor *               dst,
-                                         ggml_tensor *               mul_tensor) {
-    const ggml_tensor * rms_norm_src = (const ggml_tensor *) dst->src[0];
-    GGML_ASSERT(rms_norm_src == add_tensor);
-
-    float eps = 0.0f;
-    memcpy(&eps, dst->op_params, sizeof(float));
-
-    const float * mul_d   = nullptr;
-    const ggml_tensor * mul_src = nullptr;
-    if (mul_tensor->src[0] == dst) {
-        mul_d   = (const float *) mul_tensor->src[1]->data;
-        mul_src = mul_tensor->src[1];
-    } else if (mul_tensor->src[1] == dst) {
-        mul_d   = (const float *) mul_tensor->src[0]->data;
-        mul_src = mul_tensor->src[0];
-    } else {
-        GGML_ASSERT(false);
-    }
-
-    GGML_ASSERT(rms_norm_src->type == GGML_TYPE_F32);
-    GGML_ASSERT(dst->type == GGML_TYPE_F32);
-    GGML_ASSERT(mul_tensor->type == GGML_TYPE_F32);
-    GGML_ASSERT(eps >= 0.0f);
-
-    const int64_t ne00 = rms_norm_src->ne[0];
-    const int64_t ne01 = rms_norm_src->ne[1];
-    const int64_t ne02 = rms_norm_src->ne[2];
-    const int64_t ne03 = rms_norm_src->ne[3];
-
-    const size_t ts0 = ggml_type_size(rms_norm_src->type);
-    GGML_ASSERT(rms_norm_src->nb[0] == ts0);
-    const int64_t s01 = rms_norm_src->nb[1] / ts0;
-    const int64_t s02 = rms_norm_src->nb[2] / ts0;
-    const int64_t s03 = rms_norm_src->nb[3] / ts0;
-
-    const size_t ts_mul = ggml_type_size(mul_src->type);
-    GGML_ASSERT(mul_src->nb[0] == ts_mul);
-    const int64_t mul_s01 = mul_src->nb[1] / ts_mul;
-    const int64_t mul_s02 = mul_src->nb[2] / ts_mul;
-    const int64_t mul_s03 = mul_src->nb[3] / ts_mul;
-
-    rms_norm_mul_f32_cuda((const float *) rms_norm_src->data, mul_d, nullptr, (float *) mul_tensor->data,
-                          ne00, ne01, ne02, ne03,
-                          s01, s02, s03,
-                          mul_s01, mul_s02, mul_s03,
-                          (int) mul_src->ne[0], (int) mul_src->ne[1], (int) mul_src->ne[2], (int) mul_src->ne[3],
-                          0, 0, 0,
-                          0, 0, 0, 0,
-                          eps, ctx.stream(),
-                          (const float *) add_tensor->src[0]->data,
-                          (const float *) add_tensor->src[1]->data,
-                          (float *)       add_tensor->data);
-}
 
 void ggml_cuda_op_rms_norm_fused_add(ggml_backend_cuda_context & ctx,
                                      ggml_tensor *               dst,

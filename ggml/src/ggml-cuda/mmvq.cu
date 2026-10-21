@@ -641,7 +641,7 @@ static constexpr __host__ __device__ int calc_rows_per_block(ggml_type type, int
                 if (table_id == MMVQ_PARAMETERS_GB10) {
                     return type == GGML_TYPE_IQ2_S || type == GGML_TYPE_IQ3_S ? 2 : 1;
                 }
-                return 1; (Add P100 patch port: patches 01-22 + hand-ported fattn-f16-kv-chunk (31))
+                return 1;
             case 2:
             case 3:
             case 4:

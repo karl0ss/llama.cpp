@@ -1,5 +1,9 @@
 # llama.cpp P100 / sm_60 port
 
+**`master` on this fork is upstream llama.cpp plus the P100 stack, rebased
+regularly (expect force-pushes).** Upstream's own master is at
+[ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp).
+
 Upstream llama.cpp, tuned for the Tesla P100 (GP100, compute capability 6.0)
 as a single-GPU inference card. It contains:
 
@@ -19,7 +23,8 @@ with an environment variable (see [Environment variables](#environment-variables
 |---|---|---|
 | `p100-ported` (2026-10-21) | master `eb182d85c` | shinbunbun rounds 1+2 (01-22, 31, 32, 34, 36-38, 40) |
 | `p100r4` (2026-10-29) | master `0893ec98f` | the same stack rebased. Upstream CUDA MoE gate/up+GLU MMQ fusion (#31188) and top-k fusion (#31288) come with the newer base. Adds patches 23 + 47 |
-| **`p100r5-fagemm`** (2026-11-03) | `p100r4` | GEMM flash attention for long prompts, with MLA 576/512 support and query-token slicing |
+| `p100r5-fagemm` (2026-11-03) | `p100r4` | GEMM flash attention for long prompts, with MLA 576/512 support and query-token slicing |
+| **`master`** (2026-11-03) | upstream `28b812d6c` | the full stack above, rebased onto current upstream; this is the branch to build |
 
 ## Headline results (Tesla P100 16 GB)
 

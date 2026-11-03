@@ -1465,6 +1465,7 @@ void launch_fattn(
                 mask_chunk,
                 ic == 0 && sinks ? ((const char *) sinks->data) : nullptr,
                 KV_max.ptr,
+                nullptr, // kv_rows: chunking is disabled whenever kv_rows is set
                 dst_tmp.ptr, dst_tmp_meta.ptr,
                 scale, max_bias, m0, m1, n_head_log2, logit_softcap,
                 Q->ne[0], ne01,     Q->ne[2], Q->ne[3], Q->nb[1], Q->nb[2], Q->nb[3],

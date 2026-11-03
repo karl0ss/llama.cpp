@@ -365,7 +365,7 @@ bool ggml_cuda_flash_attn_ext_gemm_supported(const ggml_tensor * dst) {
     return true;
 }
 
-void ggml_cuda_flash_attn_ext_gemm(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+static void ggml_cuda_flash_attn_ext_gemm_impl(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * Q    = dst->src[0];
     const ggml_tensor * K    = dst->src[1];
     const ggml_tensor * V    = dst->src[2];
@@ -671,4 +671,43 @@ bool ggml_cuda_fa_gemm_enabled() {
         return !s || (s[0] != '0');
     }();
     return enabled;
+}
+
+// Scratch scales with n_tokens*gqa (S, P, O, O2, Otmp, Qf16: ~14 KB per column at chunk 2048),
+// which is ~1.2 GB for GLM-4.7-Flash (gqa 20) at -ub 4096 -- enough to OOM next to a
+// preallocated 64k cache. Run the query tokens in slices so scratch is bounded by
+// max_cols = n_tokens_slice*gqa (default 20480, ~300 MB; GGML_CUDA_FA_GEMM_COLS overrides).
+// Each slice is self-contained: token t lives at Q + t*nb[1], mask row t at mask + t*nb[1],
+// output token t at dst + t*nb[2]; the causal mask is read per row.
+void ggml_cuda_flash_attn_ext_gemm(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    static const int64_t max_cols = [] {
+        const char * e = getenv("GGML_CUDA_FA_GEMM_COLS");
+        const long long v = e ? atoll(e) : 0;
+        return v > 0 ? (int64_t) v : (int64_t) 20480;
+    }();
+    const ggml_tensor * Q    = dst->src[0];
+    const ggml_tensor * K    = dst->src[1];
+    const ggml_tensor * mask = dst->src[3];
+    const int64_t nt  = Q->ne[1];
+    const int64_t gqa = Q->ne[2] / K->ne[2];
+    const int64_t nt_slice = std::max<int64_t>(128, max_cols / gqa);
+    if (nt <= nt_slice) {
+        ggml_cuda_flash_attn_ext_gemm_impl(ctx, dst);
+        return;
+    }
+    for (int64_t t0 = 0; t0 < nt; t0 += nt_slice) {
+        const int64_t n = std::min(nt_slice, nt - t0);
+        ggml_tensor Qs = *Q;
+        Qs.ne[1] = n;
+        Qs.data  = (char *) Q->data + t0*Q->nb[1];
+        ggml_tensor ms = *mask;
+        ms.ne[1] = n;
+        ms.data  = (char *) mask->data + t0*mask->nb[1];
+        ggml_tensor ds = *dst;
+        ds.ne[2]  = n;
+        ds.data   = (char *) dst->data + t0*dst->nb[2];
+        ds.src[0] = &Qs;
+        ds.src[3] = &ms;
+        ggml_cuda_flash_attn_ext_gemm_impl(ctx, &ds);
+    }
 }

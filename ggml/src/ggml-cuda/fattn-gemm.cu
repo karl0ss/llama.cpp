@@ -306,6 +306,11 @@ bool ggml_cuda_flash_attn_ext_gemm_supported(const ggml_tensor * dst) {
     if (!mask || sinks) {
         return false;
     }
+    // kv_rows (upstream #29510, unified multi-seq KV) reads K/V through an index list; this path
+    // walks K/V by contiguous row ranges, so leave those graphs to the tile kernel.
+    if (dst->src[5] != nullptr) {
+        return false;
+    }
     if (Q->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
         return false;
     }

@@ -19,7 +19,8 @@
 >   extended here to MLA models (GLM-4.7-Flash / deepseek2) and bounded in VRAM
 >
 > **Details, build flags, environment variables and the dead ends we measured are in
-> [README.P100.md](README.P100.md).** Build with `-DCMAKE_CUDA_ARCHITECTURES=60 -DGGML_CUDA=ON`.
+> [README.P100.md](README.P100.md). Every model I run, with its launch command and speed vs stock,
+> is in [P100-MODELS.md](P100-MODELS.md).** Build with `-DCMAKE_CUDA_ARCHITECTURES=60 -DGGML_CUDA=ON`.
 
 # llama.cpp
 

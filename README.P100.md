@@ -35,7 +35,7 @@ the same prompt, over at least 2 rounds. Single runs on this machine vary by
 | Workload | Metric | Before | After | Change | From |
 |---|---|---|---|---|---|
 | gpt-oss-20b Q4_K_M | decode | 62.6 t/s | 79.6 t/s | **+27%** | shinbunbun port (vs vanilla at the same base) |
-| GLM-4.7-Flash Q3_K_XL | decode | 34.3 t/s | 37.1 t/s | **+8%** | shinbunbun port |
+| GLM-4.7-Flash Q3_K_XL | decode | 34.3 t/s | 37.1 t/s | **+8%** | shinbunbun port (on the Oct base; on `28b812d6c` stock has caught up, see [P100-MODELS.md](P100-MODELS.md)) |
 | Ornith-1.5-9B Q8_0 | decode | 53.6 t/s | 55.5 t/s | **+3.5%** | patch 23 (GDN fusion) + newer base |
 | GLM-4.7-Flash, 64k server | 8k-token prompt | 326 / 313 t/s | 419 / 402 t/s | **+29%** | GEMM flash attention |
 | GLM-4.7-Flash, 64k server | 30k-token prompt | 127 / 125 t/s | 242 / 239 t/s | **+91%** | GEMM flash attention |
@@ -55,6 +55,9 @@ The GLM server rows used the production command line: `-c 65536 -ngl 999
 -ncmoe 12 -ctk q8_0 -ctv q8_0 -b 4096 -ub 4096 -t 16`, with the two fusion env
 vars set and prompt caching disabled. VRAM use was identical on both builds
 (15,189 MiB).
+
+**Current per-model numbers against stock upstream at the same commit**, with full launch
+commands for every model in the line-up, are in **[P100-MODELS.md](P100-MODELS.md)**.
 
 ## GEMM flash attention for long prompts
 
@@ -155,7 +158,7 @@ residency, all model-specific).
 | `GGML_CUDA_FA_GEMM_PREC` | 16 | `32` runs the GEMM-FA QKᵀ and PV in fp32 (slower; no quality gain measured) |
 | `GGML_CUDA_FUSE_PRE_ADD` | 0 | fuse the residual ADD into the RMS_NORM prologue (needs patch 18) |
 | `GGML_CUDA_FUSE_ADD_UNARY_MUL` | 0 | fuse ADD→UNARY→MUL chains |
-| `GGML_CUDA_FA_F16_KV_CHUNK` | 16384 | f16-KV flash-attention chunk size; ≤0 disables |
+| `GGML_CUDA_FA_F16_KV_CHUNK` | 16384 | f16-KV flash-attention chunk size; ≤0 disables. **Set `0` for MLA models (GLM-4.7-Flash):** chunking costs them −17% decode past 16k depth, and their KV cache is small enough to convert whole |
 | `LLAMA_SCHED_PREFETCH` | off | overlap the GPU tail with the next CPU split (measured −5% on GLM-4.7; leave off unless your CPU/GPU balance differs) |
 | `GGML_CUDA_MMVQ_CHUNK_MIN_MIB` | -1 (off) | MMVQ column-chunking threshold in MiB |
 | `GGML_SCHED_SPLIT_INPUTS_CAP` | 0 | patch 47 split-input cap |

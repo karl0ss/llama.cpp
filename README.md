@@ -1,3 +1,26 @@
+> [!IMPORTANT]
+> **This fork is llama.cpp tuned for the Tesla P100 (Pascal, sm_60).** `master` is upstream
+> [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) plus a P100 patch stack, rebased
+> regularly (expect force-pushes). Everything below this box is upstream's README.
+>
+> Measured on a single P100 16 GB with interleaved A/B runs and KL-divergence quality checks:
+>
+> | | Gain |
+> |---|---|
+> | gpt-oss-20b decode | **+27%** |
+> | GLM-4.7-Flash decode | **+8%** |
+> | GLM-4.7-Flash, 30k-token prompt | **+91%** (127 → 242 t/s) |
+> | Qwen3.5-4B / Ornith-9B, 30k-token prompt | **+21% / +12%** |
+>
+> The stack includes:
+>
+> - a curated port of [shinbunbun's P100 patches](https://github.com/shinbunbun/llama-cpp-p100-patches)
+> - [Kmic-68](https://github.com/Kmic-68/llama.cpp)'s cuBLAS-GEMM flash attention for long prompts,
+>   extended here to MLA models (GLM-4.7-Flash / deepseek2) and bounded in VRAM
+>
+> **Details, build flags, environment variables and the dead ends we measured are in
+> [README.P100.md](README.P100.md).** Build with `-DCMAKE_CUDA_ARCHITECTURES=60 -DGGML_CUDA=ON`.
+
 # llama.cpp
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)

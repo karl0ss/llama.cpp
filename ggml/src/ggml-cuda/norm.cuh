@@ -31,6 +31,12 @@ void ggml_cuda_op_rms_norm_fused_add(ggml_backend_cuda_context & ctx,
 
 void ggml_cuda_op_rms_norm_back(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
+// Merge a run of identically shaped L2_NORM nodes into one launch (implementation and
+// preconditions in norm.cu)
+#define CUDA_L2_NORM_FUSE_MAX 4
+
+bool ggml_cuda_l2_norm_fused(ggml_backend_cuda_context & ctx, ggml_tensor ** nodes, int n);
+
 void ggml_cuda_op_l2_norm(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
 // Gemma 4 MoE layer tail (3 rms_norm+mul(+add) groups and the layer-scalar mul, optionally the next attn_norm) in one launch; nodes are the 9 or 11 graph nodes

@@ -15,5 +15,11 @@ struct ggml_cuda_cpy_batch {
     char *       dst[CUDA_CPY_BATCH_MAX];
 };
 
+// Merge a run of identically shaped CPY nodes into one launch (implementation and preconditions
+// in cpy.cu)
+#define CUDA_CPY_FUSE_MAX 8
+
+bool ggml_cuda_cpy_fused(ggml_backend_cuda_context & ctx, ggml_tensor ** nodes, int n);
+
 void ggml_cuda_cpy_f32_batched(ggml_backend_cuda_context & ctx, const ggml_tensor * src_ref, const ggml_tensor * dst_ref,
                                const ggml_cuda_cpy_batch & batch, int n);

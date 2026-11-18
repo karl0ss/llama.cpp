@@ -186,7 +186,7 @@ llama-server -m $MODELS/gemma-4-12b-it-UD-Q5_K_XL.gguf --host 127.0.0.1 --port $
 | Entry | Engine | Measured on this box |
 |---|---|---|
 | Qwen3.8-Flash-Next 125B (Q2_0) | [Strata-V100](https://github.com/jmnargi/Strata-V100) built with `-DSTRATA_EXPERIMENTAL_SM60=ON`, native pack + GGUF experts, `--expert-cache auto --spec 4 --mtp`, 128k with `--kv-grow` | **30–36 t/s decode**, ~274 t/s prompt, ~48 s cold load; the CPU expert pool is the bottleneck (no AVX-512) |
-| Ternary Bonsai 2 27B (PQ2_0) | PrismML llama.cpp fork, `-c 262144 -ctk q4_0 -ctv q4_0 -ub 1024` | PQ2_0 is the only fast ternary path on the P100 (+52% decode vs Q3_K_XL); ~143 t/s prompt measured on an earlier 128k entry at `-ub 2048` |
+| Ternary Bonsai 2 27B (PQ2_0) | PrismML llama.cpp fork, `prism` branch (karl0ss/llama.cpp branch `p100-sched-trial`), `-c 262144 -ctk q4_0 -ctv q4_0 -ub 1024` | PQ2_0 is the only fast ternary path on the P100 (+52% decode vs Q3_K_XL); ~143 t/s prompt measured on an earlier 128k entry at `-ub 2048`. 2026-11-18: prism tip `3f035ba66` + hand-ported patches 21/18 (`cbb880bb5`) — tg256 15.96→**24.4 t/s** shallow (`+53%`), 12.86→**18.5 t/s** @32k depth (`+43%` vs the 9a9394a fork), pp4096 ~148 t/s; PQ2 split-K/two-row tiles are Hopper-gated, no sm_60 path |
 | Maple 20B-A1B (TQ2_0) | ternary llama.cpp fork, CPU only, `taskset -c 0-13 -t 14` | **56 t/s decode with zero GPU**; pinning to 14 cores gave +8% |
 
 ## Method
